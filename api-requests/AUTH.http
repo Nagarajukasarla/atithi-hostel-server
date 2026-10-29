@@ -1,0 +1,47 @@
+### Signup User (Hostel Owner / Admin / Staff / Resident)
+POST http://localhost:8080/api/v1/auth/signup
+Content-Type: application/json
+
+{
+  "name": "Hostel Admin",
+  "email": "admin@atithiaavas.com",
+  "password": "password123",
+  "phone": "9876543210",
+  "hostelId": 1,
+  "role": "OWNER"
+}
+
+### Signup Request with Validation Failure Test
+POST http://localhost:8080/api/v1/auth/signup
+Content-Type: application/json
+
+{
+  "name": "",
+  "email": "invalid-email",
+  "password": "123"
+}
+
+### Login Request (Success)
+POST http://localhost:8080/api/v1/auth/login
+Content-Type: application/json
+
+{
+  "email": "admin@atithiaavas.com",
+  "password": "password123"
+}
+
+### Login Request with Bad Credentials (Failure Test)
+POST http://localhost:8080/api/v1/auth/login
+Content-Type: application/json
+
+{
+  "email": "admin@atithiaavas.com",
+  "password": "wrongpassword"
+}
+
+### Get Current Authenticated User Profile (via HTTP-Only Cookie or Bearer Token)
+GET http://localhost:8080/api/v1/auth/me
+# Authorization: Bearer <TOKEN>
+
+### Logout Request (Clears HTTP-Only Cookie)
+POST http://localhost:8080/api/v1/auth/logout
