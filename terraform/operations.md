@@ -19,25 +19,36 @@ A helper script [`run-db-query.ps1`](file:///d:/resource/Projects/Hostel%20Manag
 # Navigate to terraform directory
 cd "d:\resource\Projects\Hostel Management\aavas\terraform"
 
-# 1. List all database tables:
+# Windows (PowerShell):
 powershell -ExecutionPolicy Bypass -File .\run-db-query.ps1 "\dt"
-
-# 2. Check user table count:
 powershell -ExecutionPolicy Bypass -File .\run-db-query.ps1 "SELECT count(*) FROM users;"
-
-# 3. View table records:
 powershell -ExecutionPolicy Bypass -File .\run-db-query.ps1 "SELECT id, email, role, status FROM users LIMIT 10;"
 
-# 4. Describe table schema:
-powershell -ExecutionPolicy Bypass -File .\run-db-query.ps1 "\d users"
+# Linux / Termux (Bash):
+chmod +x run-db-query.sh
+./run-db-query.sh "\dt"
+./run-db-query.sh "SELECT count(*) FROM users;"
+./run-db-query.sh "SELECT id, email, role, status FROM users LIMIT 10;"
 ```
 
 ---
 
 ### Quick Database Operations (User & Hostel Activation)
 
-When new users register, you can activate their accounts and hostel entries directly:
+When new users register, you can activate their accounts and hostel entries with a single command:
 
+#### Linux / Termux (1-Command Script):
+```bash
+chmod +x activate-user.sh
+
+# Pass the email directly as an argument:
+./activate-user.sh amrutha@atithi.com
+
+# Or run interactively (it will prompt for the email):
+./activate-user.sh
+```
+
+#### Windows (PowerShell):
 ```powershell
 # 1. Activate User:
 powershell -ExecutionPolicy Bypass -File .\run-db-query.ps1 "UPDATE users SET status = 'ACTIVE' WHERE email = 'amrutha@atithi.com';"
