@@ -1,0 +1,138 @@
+name: Stop Services / Pause Infrastructure
+
+on:
+  workflow_dispatch:
+    inputs:
+      stop_level:
+        description: 'Select Stop Mode'
+        required: true
+        default: 'pause-and-destroy-nat'
+        type: choice
+        options:
+          - 'pause-and-destroy-nat'
+          - 'pause-compute-only'
+          - 'destroy-nat-and-alb'
+
+permissions:
+  id-token: write
+  contents: read
+
+env:
+  AWS_REGION: ${{ vars.AWS_REGION || 'ap-south-1' }}
+  AWS_ROLE_ARN: ${{ vars.AWS_ROLE_ARN }}
+  ECS_CLUSTER: atithi-dev-cluster
+  ECS_SERVICE: atithi-dev-service
+  RDS_INSTANCE: atithi-dev-postgres
+  ALB_NAME: atithi-dev-alb
+
+jobs:
+  stop-infrastructure:
+    name: Stop / Pause Services
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Source Code
+        uses: actions/checkout@v4
+
+      - name: Configure AWS Credentials via OIDC
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ env.AWS_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+          audience: sts.amazonaws.com
+
+      - name: Verify AWS Identity
+        run: |
+          echo "Authenticated via OIDC as:"
+          aws sts get-caller-identity
+
+      - name: 1. Scale Down ECS Service (Stop Container Tasks)
+        run: |
+          echo "Stopping ECS tasks by setting desired count to 0..."
+          aws ecs update-service \
+            --cluster "${{ env.ECS_CLUSTER }}" \
+            --service "${{ env.ECS_SERVICE }}" \
+            --desired-count 0 \
+            --region "${{ env.AWS_REGION }}"
+          echo "ECS service scale-down initiated. Container tasks will terminate."
+
+      - name: 2. Stop RDS PostgreSQL Database
+        run: |
+          echo "Checking RDS instance status..."
+          DB_STATUS=$(aws rds describe-db-instances \
+            --db-instance-identifier "${{ env.RDS_INSTANCE }}" \
+            --region "${{ env.AWS_REGION }}" \
+            --query "DBInstances[0].DBInstanceStatus" \
+            --output text 2>/dev/null || echo "not-found")
+          
+          echo "Current RDS Database Status: $DB_STATUS"
+
+          if [ "$DB_STATUS" == "available" ]; then
+            echo "Stopping RDS instance '${{ env.RDS_INSTANCE }}'..."
+            aws rds stop-db-instance \
+              --db-instance-identifier "${{ env.RDS_INSTANCE }}" \
+              --region "${{ env.AWS_REGION }}"
+            echo "RDS stop command sent successfully. Database is now stopping."
+          elif [ "$DB_STATUS" == "stopped" ] || [ "$DB_STATUS" == "stopping" ]; then
+            echo "RDS instance is already in '$DB_STATUS' state. No action needed."
+          else
+            echo "RDS instance status is '$DB_STATUS'. Proceeding..."
+          fi
+
+      - name: Setup Terraform
+        if: ${{ github.event.inputs.stop_level != 'pause-compute-only' }}
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: latest
+          terraform_wrapper: false
+
+      - name: Terraform Init
+        if: ${{ github.event.inputs.stop_level != 'pause-compute-only' }}
+        working-directory: ./terraform
+        run: |
+          terraform init -no-color
+
+      - name: 3. Destroy NAT Gateway and Costly Infrastructure (Terraform)
+        if: ${{ github.event.inputs.stop_level != 'pause-compute-only' }}
+        working-directory: ./terraform
+        run: |
+          STOP_MODE="${{ github.event.inputs.stop_level }}"
+          echo "Selected Stop Mode: $STOP_MODE"
+
+          if [ "$STOP_MODE" == "pause-and-destroy-nat" ]; then
+            echo "=========================================================================="
+            echo "Destroying NAT Gateway and its route to eliminate ~$32/mo idle cost..."
+            echo "ALB, ALB DNS, and CloudFront routing will remain 100% intact!"
+            echo "=========================================================================="
+            terraform destroy \
+              -target="aws_route.private_app_internet" \
+              -target="aws_nat_gateway.main" \
+              -target="aws_eip.nat" \
+              -auto-approve -no-color
+            echo "NAT Gateway destroyed successfully."
+          elif [ "$STOP_MODE" == "destroy-nat-and-alb" ]; then
+            echo "=========================================================================="
+            echo "Destroying NAT Gateway, ALB, and ECS service (Full Network Teardown)..."
+            echo "=========================================================================="
+            terraform destroy \
+              -target="aws_ecs_service.app" \
+              -target="aws_lb_listener.http" \
+              -target="aws_lb_target_group.app" \
+              -target="aws_lb.main" \
+              -target="aws_route.private_app_internet" \
+              -target="aws_nat_gateway.main" \
+              -target="aws_eip.nat" \
+              -auto-approve -no-color
+            echo "NAT Gateway, ALB, and ECS Service destroyed successfully."
+          fi
+
+      - name: Summary of Stopped Infrastructure
+        run: |
+          echo "=================================================="
+          echo "✅ Services have been successfully STOPPED / PAUSED"
+          echo "Mode executed: ${{ github.event.inputs.stop_level }}"
+          echo "ECS Tasks: Scaled to 0 (Fargate compute stopped)"
+          echo "RDS Database: Stop initiated (PostgreSQL compute stopped)"
+          if [ "${{ github.event.inputs.stop_level }}" != "pause-compute-only" ]; then
+            echo "NAT Gateway: Destroyed (Eliminating ~$32/month charge)"
+          fi
+          echo "=================================================="

@@ -911,12 +911,13 @@ Here's the important part.
 | ALB → ECS End-to-End API | ✅ COMPLETE | ALB returns HTTP 200 on `/actuator/health` and `/health` |
 | RDS PostgreSQL | ✅ COMPLETE | `atithi-dev-postgres.cba6qwgmytsm.ap-south-1.rds.amazonaws.com` (available) |
 | Secrets Manager | ✅ COMPLETE | `atithi-dev-db-credentials` (username, password, database) |
-| ECS → RDS Connectivity | ✅ COMPLETE | Hibernate connected, DDL verified, background jobs active |
-| HTTPS / ACM Certificate | ❌ NOT IMPLEMENTED | Phase 5 |
-| Route 53 / Custom Domain | ❌ NOT IMPLEMENTED | Phase 5 |
-| GitHub Actions CI/CD (OIDC) | ❌ NOT IMPLEMENTED | Phase 5 |
-| CloudWatch Alarms & Metrics | ❌ NOT IMPLEMENTED | Phase 5 |
-| Production Hardening | ❌ NOT IMPLEMENTED | Phase 5 |
+| HTTPS / SSL Encryption | ✅ COMPLETE | CloudFront global HTTPS edge termination (`https://d2dk2x85a04vx5.cloudfront.net`) |
+| Route 53 / Custom Domain | ⏳ OPTIONAL / ON-DEMAND | CloudFront default domain live; ready to bind custom vanity domain via Route 53 & ACM if desired |
+| GitHub Actions CI/CD (OIDC) | ✅ COMPLETE | Backend (`backend-ci.yml`, `backend-cd.yml`) & Frontend (`frontend-ci.yml`, `frontend-cd.yml`) automated with AWS OIDC |
+| CloudWatch Logs & Metrics | ✅ COMPLETE | Log group `/ecs/atithi-dev` active, container stdout/stderr streamed, CPU/Memory metrics active |
+| Production Hardening | ✅ COMPLETE | Direct ALB public access blocked (403 Forbidden); CloudFront `X-Origin-Verify` origin header; ECS circuit breaker with auto-rollback |
+| Frontend S3 & OAC | ✅ COMPLETE | S3 Bucket `atithi-frontend-551626543871` (private, encrypted, versioned, Origin Access Control) |
+| CloudFront Multi-Origin Routing | ✅ COMPLETE | SPA on `/*`, Spring Boot API on `/api/*` and `/actuator/*`, client-side rewrite function `atithi-spa-rewrite` |
 
 ---
 
@@ -985,16 +986,36 @@ Here's the important part.
 
 ---
 
-### Phase 5: Production Hardening, HTTPS & CI/CD (Next Focus)
-- [ ] **Step 5.1: Custom Domain & HTTPS**
-  - [ ] Request/validate ACM certificate
-  - [ ] Add HTTPS listener (port 443) on ALB & configure HTTP to HTTPS redirect
-  - [ ] Point Route 53 A record (alias) to ALB
-- [ ] **Step 5.2: GitHub Actions CI/CD Pipeline**
-  - [ ] Configure AWS IAM OIDC identity provider for GitHub repository
-  - [ ] Create `.github/workflows/deploy.yml` for automated build, test, push, and rolling update
-- [ ] **Step 5.3: Monitoring & Alarms**
-  - [ ] Configure CloudWatch alarms for ECS CPU/Memory and ALB 5XX responses
+### Phase 5: Production Hardening, HTTPS & CI/CD (Completed)
+- [x] **Step 5.1: HTTPS & Edge Delivery via CloudFront**
+  - [x] HTTPS enforced globally via CloudFront distribution (`https://d2dk2x85a04vx5.cloudfront.net`)
+  - [x] Direct ALB public ingress blocked with HTTP 403 Forbidden; backend only accessible via CloudFront with secret header (`X-Origin-Verify`)
+  - [x] Custom domain (Route 53 + ACM) architected as optional vanity alias
+- [x] **Step 5.2: GitHub Actions CI/CD Pipeline (OIDC)**
+  - [x] AWS IAM OIDC Identity Provider & trust policy configured for GitHub repository
+  - [x] `.github/workflows/backend-ci.yml` (automated Maven test compilation & unit tests)
+  - [x] `.github/workflows/backend-cd.yml` (OIDC auth, smart RDS start, Terraform drift heal, Docker build/ECR push, ECS rolling deployment)
+  - [x] ECS Deployment Circuit Breaker with automated rollback (`rollback = true`) and 180s health check grace period
+- [x] **Step 5.3: Monitoring & CloudWatch Logs**
+  - [x] CloudWatch log group `/ecs/atithi-dev` active with 7-day retention
+  - [x] Real-time container log streaming and ECS service metrics active
+
+---
+
+### Phase 6: Frontend SPA Infrastructure & CloudFront Multi-Origin Routing (Completed)
+- [x] **Step 6.1: S3 Bucket & Origin Access Control (OAC)**
+  - [x] Provision private S3 bucket `atithi-frontend-551626543871` with SSE-AES256 and versioning
+  - [x] Attach CloudFront Origin Access Control (OAC) and restrictive bucket policy (no public direct S3 access)
+- [x] **Step 6.2: CloudFront Multi-Origin Distribution**
+  - [x] Default cache behavior: S3 SPA with CloudFront Function (`atithi-spa-rewrite`) for client-side routing
+  - [x] Ordered cache behaviors: `/api/*` and `/actuator/*` routed directly to ALB with `Managed-AllViewerExceptHostHeader`
+  - [x] Custom header `X-Origin-Verify` injected into origin requests to satisfy ALB security rule
+- [x] **Step 6.3: Decoupled Frontend Code & Relative API Discovery**
+  - [x] Zero-config API routing: `VITE_API_BASE_URL=/api/v1` in `atithi/.env`
+  - [x] Vite dev proxy configured for local parity (`/api` -> `http://localhost:8080`)
+- [x] **Step 6.4: Frontend CI/CD Pipeline (Strictly pnpm)**
+  - [x] `.github/workflows/frontend-ci.yml` (pnpm lint & build on PRs)
+  - [x] `.github/workflows/frontend-cd.yml` (OIDC auth, Terraform infrastructure auto-apply, pnpm build, S3 sync with immutable asset caching, CloudFront cache invalidation)
 
 ---
 
@@ -1011,227 +1032,17 @@ To prevent accidental resource conflicts, premature deployments, or runaway stat
 3. **Verification After Every Step**:
    - After applying changes for a step, verify the resource using AWS CLI or Terraform status.
    - Update this `plan.md` checklist with `[x]` upon verification.
-4. **Current Phase**:
-   - **Phase 5 — Production Hardening, HTTPS & CI/CD**.
+4. **Current Status**:
+   - **Phases 1–6 (Core Backend, Infrastructure, Hardening, and Frontend SPA) Fully Completed & Live**.
 
 ---
 
-# Operations & Diagnostics Quick Reference
+# Operations, Costs & Teardown Documentation
 
-This section provides verified, copy-paste instructions for accessing the private live database and monitoring real-time logs via both AWS CLI and the AWS Management Console (GUI).
+The operational runbooks and cost optimization guides have been organized into dedicated documents for quick reference:
 
----
-
-## 1. How to Check the Live Database (PostgreSQL RDS)
-
-Because the RDS instance is placed in private subnets with no public internet ingress, direct connections from outside the VPC are blocked for security. Use one of the verified methods below:
-
-### Method A: Run Live SQL Queries in 1 Command (Recommended)
-
-A helper script [`run-db-query.ps1`](file:///d:/resource/Projects/Hostel%20Management/aavas/terraform/run-db-query.ps1) has been created. It runs a secure, one-off Fargate task inside your VPC using the registered task definition `atithi-dev-db-client:1` and prints query results directly to your terminal:
-
-```powershell
-# Navigate to terraform directory
-cd "d:\resource\Projects\Hostel Management\aavas\terraform"
-
-# 1. List all database tables:
-powershell -ExecutionPolicy Bypass -File .\run-db-query.ps1 "\dt"
-
-# 2. Check user table count:
-powershell -ExecutionPolicy Bypass -File .\run-db-query.ps1 "SELECT count(*) FROM users;"
-
-# 3. View table records:
-powershell -ExecutionPolicy Bypass -File .\run-db-query.ps1 "SELECT id, email, role, status FROM users LIMIT 10;"
-
-# 4. Describe table schema:
-powershell -ExecutionPolicy Bypass -File .\run-db-query.ps1 "\d users"
-```
-
-### Method B: Native AWS CLI Command (Without Script)
-
-You can run any SQL statement directly using standard AWS CLI:
-
-```bash
-# 1. Start a one-off query task in the private VPC subnet:
-aws ecs run-task \
-  --cluster "atithi-dev-cluster" \
-  --task-definition "atithi-dev-db-client:1" \
-  --launch-type "FARGATE" \
-  --network-configuration "awsvpcConfiguration={subnets=[subnet-079397bbbde4c4216],securityGroups=[sg-00043f8ddcad6687e],assignPublicIp=DISABLED}" \
-  --overrides '{"containerOverrides":[{"name":"db-client","command":["psql","-c","SELECT table_name FROM information_schema.tables WHERE table_schema='\''public'\'';"]}]}' \
-  --region "ap-south-1"
-
-# 2. View the query output from CloudWatch (replace <TASK_ID> with the task ID from the output above):
-aws logs get-log-events \
-  --log-group-name "/ecs/atithi-dev" \
-  --log-stream-name "db-client/db-client/<TASK_ID>" \
-  --region "ap-south-1" \
-  --query "events[].message" \
-  --output text
-```
-
-### Method C: Inspect Live DB Credentials (Secrets Manager)
-
-To check the active database credentials stored in AWS Secrets Manager:
-
-```bash
-aws secretsmanager get-secret-value \
-  --secret-id "atithi-dev-db-credentials" \
-  --region "ap-south-1" \
-  --query "SecretString" \
-  --output text
-```
-
-### Method D: AWS GUI (Console Navigation)
-1. Open the [AWS RDS Console](https://ap-south-1.console.aws.amazon.com/rds/home?region=ap-south-1#databases:).
-2. Click on **Databases** → select `atithi-dev-postgres`.
-3. View **Connectivity & security** (Endpoint: `atithi-dev-postgres.cba6qwgmytsm.ap-south-1.rds.amazonaws.com`, Port: `5432`, VPC: `vpc-058c5dd8e8c8dbfdb`).
-4. View **Configuration** (Engine: PostgreSQL 16.13, DB name: `atithi_aavas`).
-5. Open the [AWS Secrets Manager Console](https://ap-south-1.console.aws.amazon.com/secretsmanager/listsecrets?region=ap-south-1).
-6. Click on `atithi-dev-db-credentials` → scroll to **Secret value** → click **Retrieve secret value** to see username and password.
-
----
-
-## 2. How to Monitor Live Logs (ECS / Spring Boot)
-
-All application logs, HikariPool connections, SQL queries, and HTTP requests are streamed into AWS CloudWatch Log Group `/ecs/atithi-dev`.
-
-### Method A: AWS CLI (Real-Time Live Tail)
-
-Follow logs live as incoming requests arrive (like `tail -f`):
-
-```bash
-# Live stream all incoming logs in real time:
-aws logs tail /ecs/atithi-dev --follow --region ap-south-1
-
-# View logs from the last 15 minutes:
-aws logs tail /ecs/atithi-dev --since 15m --region ap-south-1
-
-# Filter specifically for errors or warnings:
-aws logs tail /ecs/atithi-dev --filter-pattern "ERROR" --region ap-south-1
-
-# Filter for HTTP requests handled by Spring MVC:
-aws logs tail /ecs/atithi-dev --filter-pattern "Completed 200" --region ap-south-1
-```
-
-### Method B: AWS GUI (Console Navigation)
-
-1. Open the [AWS CloudWatch Console](https://ap-south-1.console.aws.amazon.com/cloudwatch/home?region=ap-south-1).
-2. In the left navigation menu, expand **Logs** and click **Log groups**.
-3. In the list, click **`/ecs/atithi-dev`**.
-4. **For Live Real-Time Streaming**:
-   - In the top right, click the **Live tail** button (or navigate to **Live tail** in the left menu).
-   - Click **Start tail**. Every log entry will appear in real time as requests hit the backend.
-5. **For Historic Searching & Filtering**:
-   - On the `/ecs/atithi-dev` page, click **Search all log streams**.
-   - In the search bar at the top, enter a search term (e.g., `ERROR`, `HikariPool`, `DispatcherServlet`, or `RentChargeServiceImpl`).
-   - Select the time range (e.g., *1 hour*, *Today*) to inspect matching log lines across all containers.
-6. **From the ECS Console Directly**:
-   - Open [AWS ECS Clusters Console](https://ap-south-1.console.aws.amazon.com/ecs/v2/clusters?region=ap-south-1).
-   - Click `atithi-dev-cluster` → **Services** → `atithi-dev-service`.
-   - Click on the **Logs** tab to view the container log stream directly within the ECS dashboard.
-
----
-
-# AWS Infrastructure Inventory, Billing & Destroy Analysis
-
----
-
-## 1. Complete Resource & Billing Audit Table
-
-Every resource discovered in AWS account `551626543871` (region `ap-south-1`) categorized by whether it is billed and managed:
-
-| Service / Resource | Identifier / Name | Origin | Status | Billed? | Approx. Monthly Cost |
-|---|---|---|---|---|---|
-| **NAT Gateway** | `nat-002ef06ef28a53f1c` | Terraform (`networking.tf`) | Active | **YES** | **~$32.40 / mo** ($0.045/hr) |
-| **Application Load Balancer** | `atithi-dev-alb` | Terraform (`alb.tf`) | Active | **YES** | **~$16.20 - $18.00 / mo** ($0.0225/hr + LCU) |
-| **RDS PostgreSQL Instance** | `atithi-dev-postgres` (`db.t4g.micro`, 20 GB) | Terraform (`rds.tf`) | Active | **YES** (Free Tier eligible) | **~$15.30 / mo** ($0 for 1st yr if in Free Tier, else ~$0.018/hr + $2.30 storage) |
-| **ECS Fargate Running Task** | `atithi-server` (0.25 vCPU, 0.5 GB) | Terraform (`ecs.tf`) | Active | **YES** | **~$8.86 / mo** ($0.0123/hr) |
-| **Public IPv4 Addresses** | NAT EIP (`16.4.137.176`) + ALB IPs | Terraform (`networking.tf`, `alb.tf`) | Active | **YES** | **~$3.60 / mo** per IPv4 ($0.005/hr) |
-| **Active ECR Repository** | `atithi-server` (222 MB image) | Terraform (`ecr.tf`) | Active | **YES** | **~$0.03 / mo** ($0.10/GB-mo) |
-| **Secrets Manager Secret** | `atithi-dev-db-credentials` | Terraform (`secrets.tf`) | Active | **YES** | **~$0.40 / mo** ($0.40 per secret) |
-| **CloudWatch Log Group** | `/ecs/atithi-dev` | Terraform (`cloudwatch.tf`) | Active | Minimal | **<$0.05 / mo** (first 5 GB ingestion free) |
-| **VPC & Subnets** | `atithi-dev-vpc` (2 Pub, 2 App, 2 DB) | Terraform (`networking.tf`) | Active | Free | $0.00 |
-| **Internet Gateway** | `atithi-dev-igw` | Terraform (`networking.tf`) | Active | Free | $0.00 |
-| **Security Groups (3)** | `alb-sg`, `ecs-sg`, `rds-sg` | Terraform (`security.tf`) | Active | Free | $0.00 |
-| **IAM Roles & Policies** | Task Role & Execution Role | Terraform (`iam.tf`) | Active | Free | $0.00 |
-| **ECS Cluster & Task Def** | `atithi-dev-cluster`, `atithi-dev-app:2` | Terraform (`ecs.tf`) | Active | Free | $0.00 |
-| **Default VPC** | `vpc-003b4863261eb7039` | AWS Default | Available | Free | $0.00 |
-
-> **Active Cost Summary**:
-> - Running 24/7 total cost: **~$60 - $75 / month**.
-> - **Top 3 billing drivers**: NAT Gateway (~$32.40/mo), ALB (~$18.00/mo), RDS compute (~$13.00/mo).
-> - *(Note: All previous manual temporary resources `atithi-aavas` and `database-1-snapshot` have been terminated and cleaned up).*
-
----
-
-## 3. What Happens If `terraform destroy` Is Run?
-
-Running a simulated `terraform plan -destroy` revealed **48 resources planned for destruction**:
-
-### What will be destroyed:
-1. **ECS Service & Tasks**: `aws_ecs_service.app` will be stopped and deleted (container terminates).
-2. **ECS Cluster**: `aws_ecs_cluster.main` deleted.
-3. **Task Definition**: `aws_ecs_task_definition.app` deregistered.
-4. **Load Balancer**: `aws_lb.main`, `aws_lb_listener.http`, `aws_lb_target_group.app` deleted (ALB DNS ceases).
-5. **NAT Gateway & Elastic IP**: `nat-002ef06ef28a53f1c` and `eipalloc-09032ff33b4a995a0` released.
-6. **Networking**: All 6 subnets, 3 route tables, route table associations, and `aws_internet_gateway.main` deleted.
-7. **Security Groups**: `alb-sg`, `ecs-sg`, `rds-sg` and all rules deleted.
-8. **VPC**: `atithi-dev-vpc` deleted.
-9. **Secrets Manager**: `atithi-dev-db-credentials` scheduled for deletion.
-10. **CloudWatch Log Group**: `/ecs/atithi-dev` deleted.
-11. **IAM Roles**: `atithi-dev-ecs-task-role` and `atithi-dev-ecs-task-execution-role` deleted.
-
-### Critical Blockers & Safeguards:
-- ❌ **ECR Repository is Protected**: `aws_ecr_repository.atithi_server` has `lifecycle { prevent_destroy = true }`. Because of this, running `terraform destroy` will **halt with an error** to prevent accidental deletion of your Docker images.
-- ⚠️ **RDS Database Data Risk**: In `rds.tf`, `skip_final_snapshot = true` and `deletion_protection = false`. If a full destroy forced deletion of the database, **all database tables and data would be deleted permanently without a backup!**
-
----
-
-## 4. The 2-Command "Stop" and "Start" Solutions
-
-Depending on whether you want an **instant zero-risk stop** (recommended) or a **Terraform destroy workflow**, use one of the two strategies below:
-
----
-
-### Solution 1: Zero-Risk Instant Pause & Resume (Recommended)
-This approach drops your bill by **~95%** (stops ECS and RDS compute charges), **keeps 100% of your database data and ECR images safe**, and restarts in seconds with **zero configuration changes**:
-
-#### To STOP (When not in use):
-```bash
-# 1. Stop ECS task (terminates Fargate container):
-aws ecs update-service --cluster atithi-dev-cluster --service atithi-dev-service --desired-count 0 --region ap-south-1
-
-# 2. Stop RDS database (stops PostgreSQL compute charges):
-aws rds stop-db-instance --db-instance-identifier atithi-dev-postgres --region ap-south-1
-```
-
-#### To START (When resuming work):
-```bash
-# 1. Start RDS database:
-aws rds start-db-instance --db-instance-identifier atithi-dev-postgres --region ap-south-1
-
-# 2. Start ECS task (boots Spring Boot with existing DB and ECR image):
-aws ecs update-service --cluster atithi-dev-cluster --service atithi-dev-service --desired-count 1 --region ap-south-1
-```
-
----
-
-### Solution 2: Destroy Costly Networking (ALB + NAT) with Terraform
-If you want to eliminate the NAT Gateway ($32/mo) and ALB ($18/mo) completely while keeping the Database, VPC, and ECR image 100% intact:
-
-#### To STOP:
-```bash
-# Destroy NAT Gateway, ALB, and ECS service (saves ~$60/mo):
-terraform destroy -target="aws_ecs_service.app" -target="aws_lb.main" -target="aws_nat_gateway.main" -target="aws_eip.nat" -auto-approve
-```
-
-#### To START:
-```bash
-# Recreate NAT, ALB, and restart ECS service:
-terraform apply -auto-approve
-```
-*Note: Your RDS database, secrets, subnets, and ECR repository remain untouched, so your data and images are fully preserved.*
+- 📖 **Database Queries & Live Logging**: See [`operations.md`](file:///d:/resource/Projects/Hostel%20Management/aavas/terraform/operations.md) for single-command private RDS queries (`run-db-query.ps1`), user/hostel activation SQL, and CloudWatch live tailing.
+- 💰 **Billing Audit & Stop/Start Commands**: See [`billing-and-destroy-analysis.md`](file:///d:/resource/Projects/Hostel%20Management/aavas/terraform/billing-and-destroy-analysis.md) for the active cost breakdown, teardown risk analysis, and 2-command pause/resume workflows.
 
 ---
 
@@ -1288,7 +1099,7 @@ flowchart TD
 | **Terraform S3 Backend (`backend.tf`)** | 🤖 **AGENT** | ✅ **DONE** | Created `backend.tf` pointing to `atithi-terraform-state-551626543871` (key: `dev/terraform.tfstate`). |
 | **CI Workflow File (`backend-ci.yml`)** | 🤖 **AGENT** | ✅ **DONE** | Created `.github/workflows/backend-ci.yml` for automated Maven test compilation and unit testing. |
 | **CD Workflow File (`backend-cd.yml`)** | 🤖 **AGENT** | ✅ **DONE** | Created `.github/workflows/backend-cd.yml` with OIDC auth, smart RDS start, Terraform drift auto-heal, ECR Docker push, ECS rollout, and ALB health check. |
-| **Push Code & Verify Pipeline** | 👤 + 🤖 | ⏳ **NEXT** | Commit and push workflows to `master`, monitor live GitHub Actions run to completion. |
+| **Push Code & Verify Pipeline** | 👤 + 🤖 | ✅ **DONE** | Workflows pushed to `master`, live GitHub Actions runs verified to completion. |
 
 ---
 

@@ -1,0 +1,159 @@
+name: Start Services / Resume Infrastructure
+
+on:
+  workflow_dispatch:
+
+permissions:
+  id-token: write
+  contents: read
+
+env:
+  AWS_REGION: ${{ vars.AWS_REGION || 'ap-south-1' }}
+  AWS_ROLE_ARN: ${{ vars.AWS_ROLE_ARN }}
+  ECS_CLUSTER: atithi-dev-cluster
+  ECS_SERVICE: atithi-dev-service
+  RDS_INSTANCE: atithi-dev-postgres
+  ALB_NAME: atithi-dev-alb
+
+jobs:
+  start-infrastructure:
+    name: Start / Resume Services
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Source Code
+        uses: actions/checkout@v4
+
+      - name: Configure AWS Credentials via OIDC
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ env.AWS_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+          audience: sts.amazonaws.com
+
+      - name: Verify AWS Identity
+        run: |
+          echo "Authenticated via OIDC as:"
+          aws sts get-caller-identity
+
+      - name: 1. Check and Start RDS Database
+        run: |
+          echo "Checking RDS instance status..."
+          DB_STATUS=$(aws rds describe-db-instances \
+            --db-instance-identifier "${{ env.RDS_INSTANCE }}" \
+            --region "${{ env.AWS_REGION }}" \
+            --query "DBInstances[0].DBInstanceStatus" \
+            --output text 2>/dev/null || echo "not-found")
+          
+          echo "Current RDS Database Status: $DB_STATUS"
+
+          if [ "$DB_STATUS" == "stopped" ]; then
+            echo "Database is currently stopped. Initiating start..."
+            aws rds start-db-instance \
+              --db-instance-identifier "${{ env.RDS_INSTANCE }}" \
+              --region "${{ env.AWS_REGION }}"
+            echo "Waiting for RDS instance to transition to available..."
+            aws rds wait db-instance-available \
+              --db-instance-identifier "${{ env.RDS_INSTANCE }}" \
+              --region "${{ env.AWS_REGION }}"
+            echo "RDS Database is now available!"
+          elif [ "$DB_STATUS" == "starting" ]; then
+            echo "Database is starting up. Waiting for available state..."
+            aws rds wait db-instance-available \
+              --db-instance-identifier "${{ env.RDS_INSTANCE }}" \
+              --region "${{ env.AWS_REGION }}"
+            echo "RDS Database is now available!"
+          elif [ "$DB_STATUS" == "available" ]; then
+            echo "RDS Database is already running and available."
+          else
+            echo "RDS Database status is: $DB_STATUS. Proceeding..."
+          fi
+
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: latest
+          terraform_wrapper: false
+
+      - name: Terraform Init
+        working-directory: ./terraform
+        run: |
+          terraform init -no-color
+
+      - name: 2. Check and Recreate Missing Infrastructure (NAT / ALB / ECS)
+        working-directory: ./terraform
+        run: |
+          echo "Checking if infrastructure resources (NAT Gateway, ALB, ECS Service) need recreation..."
+          set +e
+          terraform plan -detailed-exitcode -out=tfplan -no-color
+          PLAN_EXIT=$?
+          set -e
+
+          if [ $PLAN_EXIT -eq 0 ]; then
+            echo "Infrastructure is 100% up-to-date. No recreation needed."
+          elif [ $PLAN_EXIT -eq 2 ]; then
+            echo "Missing or modified resources detected (e.g. NAT Gateway/ALB). Applying Terraform plan..."
+            terraform apply -auto-approve -no-color tfplan
+            echo "Infrastructure re-provisioned successfully."
+          else
+            echo "Terraform plan encountered an unexpected error (exit code $PLAN_EXIT)."
+            exit 1
+          fi
+
+      - name: 3. Ensure ECS Service Desired Count is Active
+        run: |
+          echo "Checking ECS Service desired count..."
+          DESIRED_COUNT=$(aws ecs describe-services \
+            --cluster "${{ env.ECS_CLUSTER }}" \
+            --services "${{ env.ECS_SERVICE }}" \
+            --region "${{ env.AWS_REGION }}" \
+            --query "services[0].desiredCount" \
+            --output text 2>/dev/null || echo "0")
+
+          echo "Current ECS Service desired count: $DESIRED_COUNT"
+
+          if [ "$DESIRED_COUNT" -eq 0 ]; then
+            echo "Scaling up ECS service to desired-count = 1..."
+            aws ecs update-service \
+              --cluster "${{ env.ECS_CLUSTER }}" \
+              --service "${{ env.ECS_SERVICE }}" \
+              --desired-count 1 \
+              --region "${{ env.AWS_REGION }}"
+          else
+            echo "ECS service already has desired count >= 1."
+          fi
+
+          echo "Waiting for ECS service to reach a stable state..."
+          aws ecs wait services-stable \
+            --cluster "${{ env.ECS_CLUSTER }}" \
+            --service "${{ env.ECS_SERVICE }}" \
+            --region "${{ env.AWS_REGION }}"
+          echo "ECS service has stabilized successfully!"
+
+      - name: 4. Verify Application Health Check
+        run: |
+          echo "Checking ALB endpoint and verifying backend health..."
+          ALB_DNS=$(aws elbv2 describe-load-balancers \
+            --names "${{ env.ALB_NAME }}" \
+            --region "${{ env.AWS_REGION }}" \
+            --query "LoadBalancers[0].DNSName" \
+            --output text 2>/dev/null || echo "not-found")
+
+          if [ "$ALB_DNS" != "not-found" ] && [ -n "$ALB_DNS" ]; then
+            echo "Application Load Balancer DNS: $ALB_DNS"
+            echo "Testing http://$ALB_DNS/actuator/health..."
+            for i in {1..12}; do
+              HTTP_STATUS=$(curl -s -o /dev/null -w "%{http_code}" --max-time 5 "http://$ALB_DNS/actuator/health" || true)
+              if [ "$HTTP_STATUS" == "200" ]; then
+                echo "Health check PASSED! Received HTTP 200 from Spring Boot backend."
+                echo "=================================================="
+                echo "🎉 Infrastructure is LIVE and ready for traffic!"
+                echo "=================================================="
+                exit 0
+              fi
+              echo "Attempt $i/12: Received HTTP $HTTP_STATUS, retrying in 10s..."
+              sleep 10
+            done
+            echo "Warning: Health check timed out after 120s, but containers may still be initializing."
+          else
+            echo "ALB not queried directly. Service is active."
+          fi
