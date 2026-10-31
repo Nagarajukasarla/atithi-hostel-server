@@ -99,12 +99,14 @@ jobs:
       - name: Setup Terraform
         uses: hashicorp/setup-terraform@v3
         with:
-          terraform_version: 1.6.0
+          terraform_version: latest
+          terraform_wrapper: false
 
       - name: Terraform Init
         working-directory: ./terraform
         run: |
           terraform init -no-color
+
 
       - name: Check Infrastructure State & Auto-Heal
         working-directory: ./terraform
