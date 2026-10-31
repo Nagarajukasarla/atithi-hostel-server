@@ -97,6 +97,16 @@ resource "aws_ecs_service" "app" {
     container_port   = 8080
   }
 
+  health_check_grace_period_seconds = 180
+
+  deployment_circuit_breaker {
+    enable   = true
+    rollback = true
+  }
+
+  deployment_maximum_percent         = 200
+  deployment_minimum_healthy_percent = 100
+
   depends_on = [
     aws_lb_listener.http,
     aws_iam_role_policy_attachment.ecs_secrets_access
