@@ -1,0 +1,52 @@
+name: Backend CI
+
+on:
+  push:
+    branches-ignore:
+      - master
+    paths:
+      - 'src/**'
+      - 'pom.xml'
+      - '.mvn/**'
+      - 'Dockerfile'
+      - '.github/workflows/backend-ci.yml'
+  pull_request:
+    branches:
+      - master
+    paths:
+      - 'src/**'
+      - 'pom.xml'
+      - '.mvn/**'
+      - 'Dockerfile'
+      - '.github/workflows/backend-ci.yml'
+  workflow_dispatch:
+
+jobs:
+  test:
+    name: Run Unit & Integration Tests
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Set up JDK 17 (Temurin)
+        uses: actions/setup-java@v4
+        with:
+          java-version: '17'
+          distribution: 'temurin'
+          cache: 'maven'
+
+      - name: Make Maven Wrapper Executable
+        run: chmod +x mvnw
+
+      - name: Run Tests with Maven
+        run: ./mvnw clean test --batch-mode
+
+      - name: Upload Test Results on Failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: surefire-test-reports
+          path: target/surefire-reports/
+          retention-days: 7

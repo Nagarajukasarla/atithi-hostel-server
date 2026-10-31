@@ -1297,54 +1297,44 @@ flowchart TD
 
 ---
 
-## 1. Clear Division of Responsibilities
+## 1. Division of Responsibilities & Progress Status
 
-To maintain maximum security, confidential tokens and repository settings remain strictly under your control, while all automation code, workflow definitions, and Terraform templates are crafted by the Agent.
-
-| Responsibility Area | Handled By | Description |
-| :--- | :--- | :--- |
-| **AWS IAM OIDC Trust Policy & Repo Association** | 👤 **USER** | Approve/bind IAM Role to your specific GitHub repository (`owner/repo`). |
-| **GitHub Repository Variables & Secrets** | 👤 **USER** | Add non-sensitive repository variables (`AWS_ROLE_ARN`, `AWS_REGION`) in GitHub UI. |
-| **Git Remote & Code Push** | 👤 **USER** | Set git remote repository and push changes to trigger pipelines. |
-| **Terraform OIDC Configuration (`oidc.tf`)** | 🤖 **AGENT** | Write Terraform code for AWS OIDC Identity Provider and GitHub Actions IAM Role with least privilege. |
-| **Terraform Remote S3 State Config (`backend.tf`)** | 🤖 **AGENT** | Write configuration for shared S3 state + DynamoDB locking so GitHub Runner can access live state. |
-| **CI Workflow File (`backend-ci.yml`)** | 🤖 **AGENT** | Create automated testing workflow for Maven builds, test reports, and dependency caching. |
-| **CD Workflow File (`backend-cd.yml`)** | 🤖 **AGENT** | Create automated deployment pipeline with OIDC auth, smart DB start, Terraform drift heal, Docker build/push, ECS deployment, and health check. |
-| **Troubleshooting & Validation Scripts** | 🤖 **AGENT** | Provide local verification commands and logs to ensure end-to-end functionality. |
+| Responsibility Area | Handled By | Status | Description |
+| :--- | :---: | :---: | :--- |
+| **AWS IAM OIDC Trust Policy & Role** | 👤 **USER** | ✅ **DONE** | Created `atithi-github-actions-role` with `repo:Nagarajukasarla/atithi-hostel-server:ref:refs/heads/master` trust policy. |
+| **S3 Remote State Bucket Creation** | 👤 **USER** | ✅ **DONE** | Created `atithi-terraform-state-551626543871` bucket in `ap-south-1` with Versioning enabled. |
+| **GitHub Repository Variables** | 👤 **USER** | ✅ **DONE** | Added `AWS_ROLE_ARN` and `AWS_REGION` (`ap-south-1`) in GitHub Actions Variables. |
+| **Terraform S3 Backend (`backend.tf`)** | 🤖 **AGENT** | ✅ **DONE** | Created `backend.tf` pointing to `atithi-terraform-state-551626543871` (key: `dev/terraform.tfstate`). |
+| **CI Workflow File (`backend-ci.yml`)** | 🤖 **AGENT** | ✅ **DONE** | Created `.github/workflows/backend-ci.yml` for automated Maven test compilation and unit testing. |
+| **CD Workflow File (`backend-cd.yml`)** | 🤖 **AGENT** | ✅ **DONE** | Created `.github/workflows/backend-cd.yml` with OIDC auth, smart RDS start, Terraform drift auto-heal, ECR Docker push, ECS rollout, and ALB health check. |
+| **Push Code & Verify Pipeline** | 👤 + 🤖 | ⏳ **NEXT** | Commit and push workflows to `master`, monitor live GitHub Actions run to completion. |
 
 ---
 
-## 2. Step-by-Step Guide for the USER (What You Need to Do)
+## 2. Step-by-Step Guide for the USER (Current Milestone)
 
-Follow these quick, simple steps to set up the repository permissions and AWS OIDC linkage:
+### Completed Steps:
+- ✅ **Step 1: GitHub Repository Linked**: `Nagarajukasarla/atithi-hostel-server` (branch `master`).
+- ✅ **Step 2: IAM Role Created**: `arn:aws:iam::551626543871:role/atithi-github-actions-role`.
+- ✅ **Step 3: S3 Bucket Created**: `atithi-terraform-state-551626543871` in Mumbai (`ap-south-1`).
+- ✅ **Step 4: GitHub Variables Added**: `AWS_ROLE_ARN` and `AWS_REGION`.
 
-### Step 1: Ensure GitHub Repository is Created & Linked
-1. Create a GitHub repository (e.g., `atithi` or `atithi-backend`) if not already present.
-2. Link your local project to the GitHub remote:
-   ```bash
-   git remote add origin https://github.com/<your-github-username>/<your-repo-name>.git
-   git branch -M main
-   ```
+### Step 5 (One-Time State Sync): Upload Existing `terraform.tfstate` to S3
+*To ensure GitHub Actions recognizes all existing resources (VPC, Subnets, RDS, Secrets, ECR, Cluster) rather than creating duplicates:*
+1. In the S3 Console for bucket `atithi-terraform-state-551626543871`:
+2. Click **Create folder**, enter folder name `dev`, and click **Create folder**.
+3. Click into the newly created `dev/` folder.
+4. Click **Upload** → click **Add files** → select `D:\resource\Projects\Hostel Management\aavas\terraform\terraform.tfstate` → click **Upload**.
 
-### Step 2: Confirm Your GitHub Repository Details
-- Note down your exact GitHub **Owner** and **Repository Name** (e.g., `your-username/atithi-project`).
-- This is required so AWS IAM only grants access to *your* GitHub repository and denies all others.
-
-### Step 3: Run the One-Time Remote State Setup (S3 + DynamoDB)
-*Note: Because GitHub Actions runs on clean, ephemeral cloud runners, it cannot read a local `terraform.tfstate` file from your laptop. It must read the state from a secure AWS S3 bucket.*
-1. The Agent will provide a 3-line AWS CLI command to create the state S3 bucket and lock table.
-2. You run the command once in your terminal.
-
-### Step 4: Add GitHub Repository Variables
-In your GitHub repository on github.com:
-1. Navigate to: **Settings** → **Secrets and variables** → **Actions** → **Variables** tab (No secrets required!).
-2. Click **New repository variable** and add:
-   - `AWS_ROLE_ARN` = `arn:aws:iam::551626543871:role/atithi-github-actions-role` (Generated by Terraform)
-   - `AWS_REGION` = `ap-south-1`
-
-### Step 5: Push Code to Trigger Pipelines
+### Step 6: Push Code to Trigger Pipelines
+```bash
+git add .
+git commit -m "feat(ci-cd): add GitHub Actions CI/CD workflows and Terraform S3 backend"
+git push origin master
+```
 Whenever you push to a feature branch or open a Pull Request, the CI pipeline runs tests automatically.
-Whenever you push or merge into `main`, the CD pipeline runs the full deployment automatically.
+Whenever you push or merge into `master`, the CD pipeline runs the full deployment automatically.
+
 
 ---
 
