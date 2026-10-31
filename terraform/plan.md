@@ -1148,8 +1148,6 @@ Every resource discovered in AWS account `551626543871` (region `ap-south-1`) ca
 | **RDS PostgreSQL Instance** | `atithi-dev-postgres` (`db.t4g.micro`, 20 GB) | Terraform (`rds.tf`) | Active | **YES** (Free Tier eligible) | **~$15.30 / mo** ($0 for 1st yr if in Free Tier, else ~$0.018/hr + $2.30 storage) |
 | **ECS Fargate Running Task** | `atithi-server` (0.25 vCPU, 0.5 GB) | Terraform (`ecs.tf`) | Active | **YES** | **~$8.86 / mo** ($0.0123/hr) |
 | **Public IPv4 Addresses** | NAT EIP (`16.4.137.176`) + ALB IPs | Terraform (`networking.tf`, `alb.tf`) | Active | **YES** | **~$3.60 / mo** per IPv4 ($0.005/hr) |
-| **Old RDS Manual Snapshot** | `database-1-snapshot` | **MANUAL** | Available | **YES** | **~$1.90 / mo** ($0.095/GB-mo for 20 GB) |
-| **Old ECR Repository** | `atithi-aavas` (225 MB image) | **MANUAL** | Active | **YES** | **~$0.03 / mo** ($0.10/GB-mo) |
 | **Active ECR Repository** | `atithi-server` (222 MB image) | Terraform (`ecr.tf`) | Active | **YES** | **~$0.03 / mo** ($0.10/GB-mo) |
 | **Secrets Manager Secret** | `atithi-dev-db-credentials` | Terraform (`secrets.tf`) | Active | **YES** | **~$0.40 / mo** ($0.40 per secret) |
 | **CloudWatch Log Group** | `/ecs/atithi-dev` | Terraform (`cloudwatch.tf`) | Active | Minimal | **<$0.05 / mo** (first 5 GB ingestion free) |
@@ -1163,24 +1161,7 @@ Every resource discovered in AWS account `551626543871` (region `ap-south-1`) ca
 > **Active Cost Summary**:
 > - Running 24/7 total cost: **~$60 - $75 / month**.
 > - **Top 3 billing drivers**: NAT Gateway (~$32.40/mo), ALB (~$18.00/mo), RDS compute (~$13.00/mo).
-
----
-
-## 2. Manual Resources Found & One-Time Cleanup Commands
-
-These resources were created manually outside Terraform and are incurring storage charges. You can run these commands once to clean them up:
-
-### A. Remove Old Manual ECR Repository (`atithi-aavas`)
-This old repository was created on October 14, 2026 and contains an unused 225 MB image:
-```bash
-aws ecr delete-repository --repository-name atithi-aavas --force --region ap-south-1
-```
-
-### B. Remove Old Manual RDS Snapshot (`database-1-snapshot`)
-This is an old 20 GB backup snapshot from a previously deleted database `database-1`:
-```bash
-aws rds delete-db-snapshot --db-snapshot-identifier database-1-snapshot --region ap-south-1
-```
+> - *(Note: All previous manual temporary resources `atithi-aavas` and `database-1-snapshot` have been terminated and cleaned up).*
 
 ---
 
