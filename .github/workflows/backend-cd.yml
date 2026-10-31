@@ -27,10 +27,28 @@ jobs:
   deploy:
     name: Build, Provision & Deploy to ECS
     runs-on: ubuntu-latest
+    permissions:
+      id-token: write
+      contents: read
 
     steps:
       - name: Checkout Source Code
         uses: actions/checkout@v4
+
+      - name: Debug OIDC Token & Role Configuration
+        run: |
+          echo "Target AWS Role ARN: ${{ env.AWS_ROLE_ARN }}"
+          echo "Target AWS Region: ${{ env.AWS_REGION }}"
+          if [ -z "${{ env.AWS_ROLE_ARN }}" ]; then
+            echo "ERROR: AWS_ROLE_ARN is empty! Please verify repository variables in GitHub Settings."
+            exit 1
+          fi
+          # Fetch and decode GitHub OIDC token payload to inspect claims
+          OIDC_TOKEN=$(curl -s -H "Authorization: bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" "$ACTIONS_ID_TOKEN_REQUEST_URL&audience=sts.amazonaws.com" | jq -r '.value' || true)
+          if [ -n "$OIDC_TOKEN" ] && [ "$OIDC_TOKEN" != "null" ]; then
+            echo "Decoded OIDC Token Claims:"
+            echo "$OIDC_TOKEN" | cut -d. -f2 | base64 -d 2>/dev/null | jq '{aud, sub, repository, repository_owner, ref, event_name}' || true
+          fi
 
       - name: Configure AWS Credentials via OIDC
         uses: aws-actions/configure-aws-credentials@v4
@@ -41,8 +59,9 @@ jobs:
 
       - name: Verify AWS Identity
         run: |
-          echo "Successfully authenticated via GitHub OIDC."
+          echo "Successfully authenticated via GitHub OIDC!"
           aws sts get-caller-identity
+
 
       - name: Check and Ensure RDS Database Status
         run: |
