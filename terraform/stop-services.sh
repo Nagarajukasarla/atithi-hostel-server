@@ -90,34 +90,28 @@ fi
 if [ "$STOP_MODE" == "full-teardown" ]; then
     echo -e "${YELLOW}[1/4] Pausing Frontend CloudFront Distribution ($CF_DIST_ID)...${NC}"
     
-    # Check if local frontend terraform exists
-    FE_TF_DIR=""
-    if [ -d "atithi/terraform" ]; then
-        FE_TF_DIR="atithi/terraform"
-    elif [ -d "../atithi/terraform" ]; then
-        FE_TF_DIR="../atithi/terraform"
-    fi
-
-    if command -v terraform &> /dev/null && [ -n "$FE_TF_DIR" ]; then
-        echo -e "${CYAN}Pausing CloudFront via local Terraform ($FE_TF_DIR)...${NC}"
-        pushd "$FE_TF_DIR" > /dev/null
-        terraform apply -var="cloudfront_enabled=false" -auto-approve -no-color > /dev/null 2>&1 || true
-        popd > /dev/null
-        echo -e "${GREEN}✓ CloudFront distribution paused via Terraform.${NC}"
-    else
-        # Disable via AWS CLI directly
-        CF_CONFIG_RAW=$(aws cloudfront get-distribution-config --id "$CF_DIST_ID" --output json 2>/dev/null || echo "")
-        if [ -n "$CF_CONFIG_RAW" ]; then
-            CF_ETAG=$(aws cloudfront get-distribution-config --id "$CF_DIST_ID" --query "ETag" --output text 2>/dev/null || echo "")
-            TMP_CF=$(mktemp 2>/dev/null || mktemp -t cf-cfg)
-            aws cloudfront get-distribution-config --id "$CF_DIST_ID" --query "DistributionConfig" --output json 2>/dev/null | \
-                sed 's/"Enabled": true/"Enabled": false/' > "$TMP_CF" || true
+    CF_CONFIG_RAW=$(aws cloudfront get-distribution-config --id "$CF_DIST_ID" --output json 2>/dev/null || echo "")
+    if [ -n "$CF_CONFIG_RAW" ]; then
+        CF_ETAG=$(aws cloudfront get-distribution-config --id "$CF_DIST_ID" --query "ETag" --output text 2>/dev/null || echo "")
+        IS_ENABLED=$(aws cloudfront get-distribution-config --id "$CF_DIST_ID" --query "DistributionConfig.Enabled" --output text 2>/dev/null || echo "")
+        
+        if [ "$IS_ENABLED" == "True" ]; then
+            TMP_CF=$(mktemp 2>/dev/null || echo "cf_disable_tmp.json")
+            if command -v jq &> /dev/null; then
+                echo "$CF_CONFIG_RAW" | jq '.DistributionConfig.Enabled = false' | jq '.DistributionConfig' > "$TMP_CF"
+            elif command -v python3 &> /dev/null; then
+                python3 -c "import sys, json; d = json.load(sys.stdin)['DistributionConfig']; d['Enabled'] = False; print(json.dumps(d))" <<< "$CF_CONFIG_RAW" > "$TMP_CF"
+            else
+                aws cloudfront get-distribution-config --id "$CF_DIST_ID" --query "DistributionConfig" --output json 2>/dev/null | sed 's/"Enabled": true/"Enabled": false/' > "$TMP_CF"
+            fi
             aws cloudfront update-distribution --id "$CF_DIST_ID" --if-match "$CF_ETAG" --distribution-config file://"$TMP_CF" > /dev/null 2>&1 || true
             rm -f "$TMP_CF"
             echo -e "${GREEN}✓ CloudFront distribution paused via AWS CLI.${NC}"
         else
-            echo -e "${DIM}CloudFront not modified or already paused.${NC}"
+            echo -e "${GREEN}✓ CloudFront distribution is already paused / disabled.${NC}"
         fi
+    else
+        echo -e "${DIM}CloudFront not modified or already paused.${NC}"
     fi
 else
     echo -e "${DIM}[1/4] Frontend CloudFront preserved (non-full teardown mode).${NC}"

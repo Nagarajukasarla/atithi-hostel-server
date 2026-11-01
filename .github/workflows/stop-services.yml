@@ -33,13 +33,6 @@ jobs:
       - name: Checkout Backend Source Code
         uses: actions/checkout@v4
 
-      - name: Checkout Frontend Repository
-        if: ${{ github.event.inputs.stop_level == 'full-teardown' }}
-        uses: actions/checkout@v4
-        with:
-          repository: Nagarajukasarla/atithi-hostel-client
-          path: frontend-repo
-
       - name: Configure AWS Credentials via OIDC
         uses: aws-actions/configure-aws-credentials@v4
         with:
@@ -61,14 +54,30 @@ jobs:
 
       - name: 1. Pause Frontend (Disable CloudFront Distribution)
         if: ${{ github.event.inputs.stop_level == 'full-teardown' }}
-        working-directory: ./frontend-repo/terraform
+        continue-on-error: true
         run: |
           echo "=========================================================================="
-          echo "Pausing Frontend CloudFront Distribution (Traffic stopped)..."
+          echo "Pausing Frontend CloudFront Distribution via AWS CLI (Traffic stopped)..."
           echo "=========================================================================="
-          terraform init -no-color
-          terraform apply -var="cloudfront_enabled=false" -auto-approve -no-color
-          echo "Frontend CloudFront distribution successfully paused."
+          CF_DIST_ID="${{ vars.CLOUDFRONT_DISTRIBUTION_ID || 'E3IJXZS95HCP8S' }}"
+          echo "Target CloudFront Distribution: $CF_DIST_ID"
+
+          CF_CONFIG=$(aws cloudfront get-distribution-config --id "$CF_DIST_ID" 2>/dev/null || true)
+          if [ -n "$CF_CONFIG" ]; then
+            ETAG=$(aws cloudfront get-distribution-config --id "$CF_DIST_ID" --query "ETag" --output text)
+            IS_ENABLED=$(aws cloudfront get-distribution-config --id "$CF_DIST_ID" --query "DistributionConfig.Enabled" --output text)
+
+            if [ "$IS_ENABLED" == "True" ]; then
+              echo "Disabling CloudFront distribution ($CF_DIST_ID)..."
+              aws cloudfront get-distribution-config --id "$CF_DIST_ID" --query "DistributionConfig" | jq '.Enabled = false' > /tmp/cf_disable.json
+              aws cloudfront update-distribution --id "$CF_DIST_ID" --if-match "$ETAG" --distribution-config file:///tmp/cf_disable.json
+              echo "Frontend CloudFront distribution successfully paused."
+            else
+              echo "Frontend CloudFront distribution is already paused / disabled."
+            fi
+          else
+            echo "CloudFront distribution $CF_DIST_ID not found or not accessible."
+          fi
 
       - name: 2. Scale Down ECS Service (Stop Container Tasks)
         run: |
