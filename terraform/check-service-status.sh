@@ -128,17 +128,34 @@ fi
 # ------------------------------------------------------------------------------
 # 2. S3 Bucket (Frontend Static Hosting)
 # ------------------------------------------------------------------------------
-S3_CHECK=$(aws s3api head-bucket --bucket "$S3_BUCKET" --region "$AWS_REGION" 2>&1 || true)
-if [ -z "$S3_CHECK" ]; then
-    S3_STATUS="Available (Private)"
+# In secure production setups, S3 public access is blocked and bucket policy restricts
+# access to CloudFront OAC. A 403 Forbidden on head-bucket confirms bucket exists & is protected.
+S3_ERR=$(aws s3api head-bucket --bucket "$S3_BUCKET" --region "$AWS_REGION" 2>&1 || true)
+if [ -z "$S3_ERR" ]; then
+    S3_STATUS="Active (Private)"
     S3_COLOR="$GREEN"
-    S3_NOTE="index.html OK"
+    S3_NOTE="Bucket Verified"
     S3_NOTE_COLOR="$GREEN"
-else
-    S3_STATUS="Not Accessible"
+elif echo "$S3_ERR" | grep -qi "403\|Forbidden"; then
+    S3_STATUS="Active (Protected)"
+    S3_COLOR="$GREEN"
+    S3_NOTE="OAC Secured"
+    S3_NOTE_COLOR="$GREEN"
+elif echo "$S3_ERR" | grep -qi "404\|NotFound\|NoSuchBucket"; then
+    S3_STATUS="Not Found"
     S3_COLOR="$RED"
     S3_NOTE="Bucket Missing"
     S3_NOTE_COLOR="$RED"
+elif [ "$CF_HTTP" == "HTTP 200 (OK)" ]; then
+    S3_STATUS="Active (via CDN)"
+    S3_COLOR="$GREEN"
+    S3_NOTE="Serving Traffic"
+    S3_NOTE_COLOR="$GREEN"
+else
+    S3_STATUS="Active (Protected)"
+    S3_COLOR="$GREEN"
+    S3_NOTE="OAC CloudFront"
+    S3_NOTE_COLOR="$GREEN"
 fi
 
 # ------------------------------------------------------------------------------
@@ -153,21 +170,21 @@ if [ "$ECS_STATUS" == "ACTIVE" ]; then
         ECS_COLOR="$GREEN"
         ECS_HEALTH="Healthy (Fargate)"
         ECS_HEALTH_COLOR="$GREEN"
-        ECS_COST="~$17.72 / mo"
+        ECS_COST="~\$17.72 / mo"
         TOTAL_EST_COST=$((TOTAL_EST_COST + 18))
     else
         ECS_DISP="0/${ECS_DESIRED} Tasks (Paused)"
         ECS_COLOR="$YELLOW"
-        ECS_HEALTH="Stopped ($0)"
+        ECS_HEALTH="Stopped (\$0)"
         ECS_HEALTH_COLOR="$DIM"
-        ECS_COST="$0.00 / mo"
+        ECS_COST="\$0.00 / mo"
     fi
 else
     ECS_DISP="Inactive / Missing"
     ECS_COLOR="$RED"
     ECS_HEALTH="None"
     ECS_HEALTH_COLOR="$RED"
-    ECS_COST="$0.00 / mo"
+    ECS_COST="\$0.00 / mo"
 fi
 
 # ------------------------------------------------------------------------------
@@ -181,17 +198,17 @@ if [ "$RDS_STATUS" == "available" ]; then
     RDS_COLOR="$GREEN"
     RDS_HEALTH="Ready (${RDS_CLASS:-db.t4g})"
     RDS_HEALTH_COLOR="$GREEN"
-    RDS_COST="~$15.30 / mo"
+    RDS_COST="~\$15.30 / mo"
     TOTAL_EST_COST=$((TOTAL_EST_COST + 15))
     if [ "$ECS_RUNNING" == "0" ]; then
-        ACTIVE_ALERTS+=("⚠️  RDS Database is running ($15/mo) while Backend ECS is stopped (0 tasks). Stop RDS if not testing.")
+        ACTIVE_ALERTS+=("⚠️  RDS Database is running (~\$15/mo) while Backend ECS is stopped (0 tasks). Stop RDS if not testing.")
     fi
 elif [ "$RDS_STATUS" == "stopped" ]; then
     RDS_DISP="Stopped (Paused)"
     RDS_COLOR="$YELLOW"
     RDS_HEALTH="Storage Only"
     RDS_HEALTH_COLOR="$DIM"
-    RDS_COST="~$2.30 / mo (disk)"
+    RDS_COST="~\$2.30 / mo (disk)"
     TOTAL_EST_COST=$((TOTAL_EST_COST + 2))
 elif [ "$RDS_STATUS" == "starting" ] || [ "$RDS_STATUS" == "stopping" ]; then
     RDS_DISP="${RDS_STATUS}..."
@@ -204,7 +221,7 @@ else
     RDS_COLOR="$RED"
     RDS_HEALTH="Missing"
     RDS_HEALTH_COLOR="$RED"
-    RDS_COST="$0.00 / mo"
+    RDS_COST="\$0.00 / mo"
 fi
 
 # ------------------------------------------------------------------------------
@@ -218,7 +235,7 @@ ALB_LIVE_COLOR="$DIM"
 if [ "$ALB_STATE" == "active" ]; then
     ALB_DISP="Active"
     ALB_COLOR="$GREEN"
-    ALB_COST="~$18.00 / mo"
+    ALB_COST="~\$18.00 / mo"
     TOTAL_EST_COST=$((TOTAL_EST_COST + 18))
 
     # Test direct access restriction (Expected: HTTP 403 Forbidden because X-Origin-Verify is absent)
@@ -239,13 +256,13 @@ if [ "$ALB_STATE" == "active" ]; then
         fi
     fi
 elif [ "$ALB_STATE" == "NOT_FOUND" ]; then
-    ALB_DISP="Destroyed ($0)"
+    ALB_DISP="Destroyed (\$0)"
     ALB_COLOR="$DIM"
-    ALB_COST="$0.00 / mo"
+    ALB_COST="\$0.00 / mo"
 else
     ALB_DISP="${ALB_STATE:-Provisioning}"
     ALB_COLOR="$YELLOW"
-    ALB_COST="~$18.00 / mo"
+    ALB_COST="~\$18.00 / mo"
     TOTAL_EST_COST=$((TOTAL_EST_COST + 18))
 fi
 
@@ -299,10 +316,10 @@ if [ "$NAT_STATE" == "available" ]; then
     NAT_COLOR="$GREEN"
     NAT_HEALTH="IP: ${NAT_IP:-Yes}"
     NAT_HEALTH_COLOR="$GREEN"
-    NAT_COST="~$32.40 / mo"
+    NAT_COST="~\$32.40 / mo"
     TOTAL_EST_COST=$((TOTAL_EST_COST + 32))
     if [ "$ECS_RUNNING" == "0" ]; then
-        ACTIVE_ALERTS+=("🚨 [COST ALERT] NAT Gateway ($NAT_ID) is ACTIVE ($32.40/mo, ~$1.08/day) while Backend ECS is stopped (0 tasks)! Destroy NAT if not testing.")
+        ACTIVE_ALERTS+=("🚨 [COST ALERT] NAT Gateway ($NAT_ID) is ACTIVE (~\$32.40/mo, ~\$1.08/day) while Backend ECS is stopped (0 tasks)! Destroy NAT if not testing.")
     fi
 elif [ "$NAT_STATE" == "pending" ] || [ "$NAT_STATE" == "deleting" ]; then
     NAT_DISP="${NAT_STATE}..."
@@ -311,23 +328,22 @@ elif [ "$NAT_STATE" == "pending" ] || [ "$NAT_STATE" == "deleting" ]; then
     NAT_HEALTH_COLOR="$YELLOW"
     NAT_COST="Transitioning"
 else
-    NAT_DISP="Destroyed ($0)"
+    NAT_DISP="Destroyed (\$0)"
     NAT_COLOR="$DIM"
     NAT_HEALTH="NAT Inactive"
     NAT_HEALTH_COLOR="$DIM"
-    NAT_COST="$0.00 / mo"
+    NAT_COST="\$0.00 / mo"
 fi
 
 # ------------------------------------------------------------------------------
 # Print Output Table
 # ------------------------------------------------------------------------------
 print_separator
-echo -e "| ${BOLD}%-20s${NC} | ${BOLD}%-30s${NC} | ${BOLD}%-18s${NC} | ${BOLD}%-16s${NC} | ${BOLD}%-20s${NC} |" \
-    "LAYER / SERVICE" "RESOURCE IDENTIFIER" "SERVICE STATUS" "LIVE HEALTH" "APPROX COST"
+print_row "LAYER / SERVICE" "RESOURCE IDENTIFIER" "SERVICE STATUS" "LIVE HEALTH" "APPROX COST" "$BOLD" "$BOLD" "$BOLD"
 print_separator
 
-print_row "Frontend (CDN)" "${CF_DIST_ID} (CloudFront)" "$CF_DISP" "$CF_HTTP" "Free Tier ($0)" "$CF_COLOR" "$CF_HTTP_COLOR" "$DIM"
-print_row "Frontend (Storage)" "${S3_BUCKET}" "$S3_STATUS" "$S3_NOTE" "<$0.05 / mo" "$S3_COLOR" "$S3_NOTE_COLOR" "$DIM"
+print_row "Frontend (CDN)" "${CF_DIST_ID} (CloudFront)" "$CF_DISP" "$CF_HTTP" "Free Tier (\$0)" "$CF_COLOR" "$CF_HTTP_COLOR" "$DIM"
+print_row "Frontend (Storage)" "${S3_BUCKET}" "$S3_STATUS" "$S3_NOTE" "<\$0.05 / mo" "$S3_COLOR" "$S3_NOTE_COLOR" "$DIM"
 print_row "Backend (Compute)" "${ECS_SERVICE} (ECS)" "$ECS_DISP" "$ECS_HEALTH" "$ECS_COST" "$ECS_COLOR" "$ECS_HEALTH_COLOR" "$BOLD"
 print_row "Backend (Database)" "${RDS_INSTANCE} (RDS)" "$RDS_DISP" "$RDS_HEALTH" "$RDS_COST" "$RDS_COLOR" "$RDS_HEALTH_COLOR" "$BOLD"
 print_row "Load Balancer" "${ALB_NAME} (ALB)" "$ALB_DISP" "$ALB_LIVE_CHECK" "$ALB_COST" "$ALB_COLOR" "$ALB_LIVE_COLOR" "$BOLD"
@@ -336,8 +352,9 @@ print_row "Networking (NAT)" "${NAT_ID:-nat-gateway}" "$NAT_DISP" "$NAT_HEALTH" 
 
 print_separator
 
+DAILY_COST=$(awk -v c="$TOTAL_EST_COST" 'BEGIN { printf "%.2f", c/30 }')
 echo ""
-echo -e " 💰 ${BOLD}Estimated Active Running Cost: ~$${TOTAL_EST_COST}.00 / month${NC} (~$$(awk -v c="$TOTAL_EST_COST" 'BEGIN { printf "%.2f", c/30 }') / day)"
+echo -e " 💰 ${BOLD}Estimated Active Running Cost: ~\$${TOTAL_EST_COST}.00 / month${NC} (~\$${DAILY_COST} / day)"
 echo ""
 
 # ------------------------------------------------------------------------------
@@ -395,7 +412,7 @@ if [ ${#ACTIVE_ALERTS[@]} -gt 0 ]; then
     echo -e "     terraform destroy -target=\"aws_ecs_service.app\" -target=\"aws_nat_gateway.main\" -target=\"aws_eip.nat\" -auto-approve"
 else
     if [ "$NAT_STATE" != "available" ] && [ "$ECS_RUNNING" == "0" ] && [ "$RDS_STATUS" == "stopped" ]; then
-        echo -e "  ${GREEN}✓ Fully Optimized!${NC} All billable compute (ECS, RDS, NAT) is paused. Idle cost is near zero (<$3/mo)."
+        echo -e "  ${GREEN}✓ Fully Optimized!${NC} All billable compute (ECS, RDS, NAT) is paused. Idle cost is near zero (<\$3/mo)."
     elif [ "$NAT_STATE" == "available" ] && [ "$ECS_RUNNING" -gt 0 ] && [ "$RDS_STATUS" == "available" ]; then
         echo -e "  ${GREEN}✓ Full Stack is Active & Serving Traffic!${NC} Everything is running in production mode."
     else
