@@ -164,6 +164,22 @@ jobs:
             --region "${{ env.AWS_REGION }}"
           echo "ECS service successfully stabilized!"
 
+      - name: Checkout Frontend Repository
+        uses: actions/checkout@v4
+        with:
+          repository: Nagarajukasarla/atithi-hostel-client
+          path: frontend-repo
+
+      - name: Re-Link Frontend CloudFront & Security Rules to Backend ALB
+        working-directory: ./frontend-repo/terraform
+        run: |
+          echo "=========================================================================="
+          echo "Re-linking Frontend CloudFront and ALB listener rules to Backend ALB..."
+          echo "=========================================================================="
+          terraform init -no-color
+          terraform apply -var="cloudfront_enabled=true" -auto-approve -no-color
+          echo "CloudFront routing synchronized successfully."
+
       - name: Verify Live Application Health Check via ALB
         run: |
           echo "Retrieving public ALB endpoint..."
