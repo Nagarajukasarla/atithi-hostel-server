@@ -4,6 +4,18 @@ This document provides verified, copy-paste instructions for accessing the priva
 
 ---
 
+## 0. Instant Service Status & Cost Audit (Tabular Dashboard)
+
+To view a real-time status table of all frontend and backend AWS services, test live endpoints, and detect any idle cost drivers (like an unneeded NAT Gateway):
+
+```bash
+cd "d:\resource\Projects\Hostel Management\aavas\terraform"
+chmod +x check-service-status.sh
+./check-service-status.sh
+```
+
+---
+
 ## 1. How to Check & Query the Live Database (PostgreSQL RDS)
 
 Because the RDS instance is placed in private subnets with no public internet ingress, direct connections from outside the VPC are blocked for security. Use one of the verified methods below:
