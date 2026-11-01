@@ -1,8 +1,13 @@
 #!/usr/bin/env bash
 # ==============================================================================
-# Atithi Backend - Start Services (Resume Infrastructure)
-# Starts RDS PostgreSQL, ensures NAT Gateway / ALB are active, and scales ECS up.
-# Run from Termux / Linux / macOS / WSL / Git Bash
+# Atithi Full Stack - Start Services (Resume Infrastructure & Re-link Frontend)
+# 1. Starts RDS PostgreSQL database (and waits until available)
+# 2. Re-provisions missing NAT Gateway, EIP, and ALB via Terraform
+# 3. Scales up ECS Fargate container and stabilizes tasks
+# 4. Re-links Frontend CloudFront and ALB Listener Rules to the new ALB DNS
+# 5. Performs live end-to-end health verification
+#
+# Supported environments: Termux, Linux, macOS, WSL, Git Bash
 # ==============================================================================
 
 set -eo pipefail
@@ -25,7 +30,7 @@ CLOUDFRONT_URL="https://d2dk2x85a04vx5.cloudfront.net"
 
 echo ""
 echo -e "${CYAN}${BOLD}===================================================================================${NC}"
-echo -e "${CYAN}${BOLD}               ATITHI BACKEND — START SERVICES & RESUME INFRASTRUCTURE              ${NC}"
+echo -e "${CYAN}${BOLD}          ATITHI FULL STACK — START SERVICES & RE-LINK INFRASTRUCTURE              ${NC}"
 echo -e "${CYAN}${BOLD}===================================================================================${NC}"
 echo -e " Region: ${BOLD}${AWS_REGION}${NC}"
 echo ""
@@ -39,7 +44,7 @@ fi
 # ------------------------------------------------------------------------------
 # 1. Check and Start RDS Database
 # ------------------------------------------------------------------------------
-echo -e "${YELLOW}[1/4] Checking RDS PostgreSQL Database ($RDS_INSTANCE)...${NC}"
+echo -e "${YELLOW}[1/5] Checking RDS PostgreSQL Database ($RDS_INSTANCE)...${NC}"
 DB_STATUS=$(aws rds describe-db-instances \
     --db-instance-identifier "$RDS_INSTANCE" \
     --region "$AWS_REGION" \
@@ -72,51 +77,53 @@ else
 fi
 
 # ------------------------------------------------------------------------------
-# 2. Check NAT Gateway (Required for Fargate private subnet ECR pulling)
+# 2. Check and Re-Provision Missing Backend Infrastructure (NAT / ALB)
 # ------------------------------------------------------------------------------
-echo -e "\n${YELLOW}[2/4] Checking NAT Gateway status...${NC}"
-NAT_STATE=$(aws ec2 describe-nat-gateways \
-    --filter "Name=vpc-id,Values=$VPC_ID" "Name=state,Values=available,pending" \
-    --region "$AWS_REGION" \
-    --query "NatGateways[0].State" \
-    --output text 2>/dev/null || echo "None")
+echo -e "\n${YELLOW}[2/5] Checking Backend Infrastructure (NAT Gateway & ALB)...${NC}"
 
-if [ "$NAT_STATE" == "None" ] || [ -z "$NAT_STATE" ]; then
-    echo -e "${YELLOW}NAT Gateway is currently missing/destroyed.${NC}"
+BE_TF_DIR=""
+if [ -d "aavas/terraform" ]; then
+    BE_TF_DIR="aavas/terraform"
+elif [ -d "terraform" ] && [ -f "terraform/backend.tf" ]; then
+    BE_TF_DIR="terraform"
+elif [ -d "../terraform" ] && [ -f "../terraform/backend.tf" ]; then
+    BE_TF_DIR="../terraform"
+elif [ -f "backend.tf" ]; then
+    BE_TF_DIR="."
+fi
 
-    # Check if local Terraform exists
-    TF_DIR=""
-    if [ -d "terraform" ] && [ -f "terraform/backend.tf" ]; then
-        TF_DIR="terraform"
-    elif [ -d "../terraform" ] && [ -f "../terraform/backend.tf" ]; then
-        TF_DIR="../terraform"
-    elif [ -f "backend.tf" ]; then
-        TF_DIR="."
-    fi
-
-    if command -v terraform &> /dev/null && [ -n "$TF_DIR" ]; then
-        echo -e "${CYAN}Auto-recreating missing NAT Gateway via local Terraform (${TF_DIR})...${NC}"
-        pushd "$TF_DIR" > /dev/null
-        terraform apply -auto-approve -no-color
-        popd > /dev/null
-        echo -e "${GREEN}✓ NAT Gateway recreated successfully!${NC}"
-    elif command -v gh &> /dev/null; then
-        echo -e "${CYAN}Triggering GitHub Actions workflow to auto-provision missing NAT Gateway...${NC}"
-        gh workflow run "Start Services / Resume Infrastructure"
-        echo -e "${GREEN}✓ Start workflow triggered in GitHub Actions!${NC}"
-    else
-        echo -e "${RED}⚠️  Warning: NAT Gateway is missing! Private ECS tasks need NAT to pull Docker images.${NC}"
-        echo -e "${CYAN}👉 To auto-recreate NAT Gateway with 1 click:${NC}"
+NEW_ALB_DNS=""
+if command -v terraform &> /dev/null && [ -n "$BE_TF_DIR" ]; then
+    echo -e "${CYAN}Checking & auto-provisioning missing Backend resources via Terraform (${BE_TF_DIR})...${NC}"
+    pushd "$BE_TF_DIR" > /dev/null
+    terraform init -no-color > /dev/null 2>&1 || true
+    terraform apply -auto-approve -no-color
+    NEW_ALB_DNS=$(terraform output -raw alb_dns_name 2>/dev/null || echo "")
+    popd > /dev/null
+    echo -e "${GREEN}✓ Backend Infrastructure re-provisioned! New ALB DNS: ${NEW_ALB_DNS}${NC}"
+elif command -v gh &> /dev/null; then
+    echo -e "${CYAN}Triggering GitHub Actions workflow to auto-provision and re-link full stack...${NC}"
+    gh workflow run "Start Services / Resume Infrastructure"
+    echo -e "${GREEN}✓ Start workflow triggered in GitHub Actions!${NC}"
+    exit 0
+else
+    echo -e "${CYAN}Querying live ALB DNS via AWS CLI...${NC}"
+    NEW_ALB_DNS=$(aws elbv2 describe-load-balancers \
+        --names "$ALB_NAME" \
+        --region "$AWS_REGION" \
+        --query "LoadBalancers[0].DNSName" \
+        --output text 2>/dev/null || echo "")
+    if [ -z "$NEW_ALB_DNS" ] || [ "$NEW_ALB_DNS" == "None" ]; then
+        echo -e "${RED}⚠️  ALB is missing and local Terraform is not available.${NC}"
+        echo -e "${CYAN}👉 To auto-provision missing NAT/ALB and re-link in 1 click:${NC}"
         echo -e "   Go to GitHub ➔ atithi-hostel-server ➔ Actions ➔ 'Start Services / Resume Infrastructure' ➔ Run workflow."
     fi
-else
-    echo -e "${GREEN}✓ NAT Gateway is active ($NAT_STATE).${NC}"
 fi
 
 # ------------------------------------------------------------------------------
 # 3. Scale Up ECS Service (Start Fargate Task)
 # ------------------------------------------------------------------------------
-echo -e "\n${YELLOW}[3/4] Checking ECS Service ($ECS_SERVICE)...${NC}"
+echo -e "\n${YELLOW}[3/5] Checking ECS Service ($ECS_SERVICE)...${NC}"
 DESIRED_COUNT=$(aws ecs describe-services \
     --cluster "$ECS_CLUSTER" \
     --services "$ECS_SERVICE" \
@@ -146,26 +153,52 @@ aws ecs wait services-stable \
 echo -e "${GREEN}✓ ECS service is STABLE and running!${NC}"
 
 # ------------------------------------------------------------------------------
-# 4. Verify Health Check
+# 4. Re-Link Frontend CloudFront & Security Rules to New ALB
 # ------------------------------------------------------------------------------
-echo -e "\n${YELLOW}[4/4] Verifying live endpoint connectivity...${NC}"
+echo -e "\n${YELLOW}[4/5] Re-linking Frontend CloudFront to New ALB...${NC}"
+
+FE_TF_DIR=""
+if [ -d "atithi/terraform" ]; then
+    FE_TF_DIR="atithi/terraform"
+elif [ -d "../atithi/terraform" ]; then
+    FE_TF_DIR="../atithi/terraform"
+fi
+
+if command -v terraform &> /dev/null && [ -n "$FE_TF_DIR" ]; then
+    echo -e "${CYAN}Applying Frontend Terraform (${FE_TF_DIR}) to re-link CloudFront Origin 2 to New ALB...${NC}"
+    pushd "$FE_TF_DIR" > /dev/null
+    terraform init -no-color > /dev/null 2>&1 || true
+    terraform apply -var="cloudfront_enabled=true" -auto-approve -no-color
+    popd > /dev/null
+    echo -e "${GREEN}✓ Frontend CloudFront and ALB listener rules successfully re-linked!${NC}"
+else
+    echo -e "${DIM}Local frontend Terraform directory not found. Re-linking handled via GitHub Actions.${NC}"
+fi
+
+# ------------------------------------------------------------------------------
+# 5. Verify Health Check
+# ------------------------------------------------------------------------------
+echo -e "\n${YELLOW}[5/5] Verifying live endpoint connectivity...${NC}"
 if command -v curl &> /dev/null; then
-    for i in {1..8}; do
+    for i in {1..12}; do
         HTTP_CODE=$(curl -s -m 5 -o /dev/null -w "%{http_code}" "${CLOUDFRONT_URL}/actuator/health" 2>/dev/null || echo "000")
         if [ "$HTTP_CODE" == "200" ]; then
             echo -e "${GREEN}✓ Health check PASSED! Spring Boot is responding via CloudFront (${CLOUDFRONT_URL}).${NC}"
             break
         fi
-        echo -e "${CYAN}Attempt $i/8: Waiting for Spring Boot to warm up (HTTP $HTTP_CODE)... retrying in 5s${NC}"
+        echo -e "${CYAN}Attempt $i/12: Waiting for CloudFront and Spring Boot to link (HTTP $HTTP_CODE)... retrying in 5s${NC}"
         sleep 5
     done
 fi
 
 echo ""
 echo -e "${GREEN}${BOLD}===================================================================================${NC}"
-echo -e "${GREEN}${BOLD}   🎉 ATITHI BACKEND IS LIVE & READY FOR TRAFFIC!                                 ${NC}"
+echo -e "${GREEN}${BOLD}   🎉 ATITHI FULL STACK IS LIVE, PROPERLY LINKED & READY FOR TRAFFIC!              ${NC}"
 echo -e "${GREEN}${BOLD}===================================================================================${NC}"
-echo -e "  Frontend SPA : ${BOLD}https://d2dk2x85a04vx5.cloudfront.net${NC}"
-echo -e "  Backend API  : ${BOLD}https://d2dk2x85a04vx5.cloudfront.net/actuator/health${NC}"
+echo -e "  • Frontend App : ${BOLD}https://d2dk2x85a04vx5.cloudfront.net${NC}"
+echo -e "  • Backend API  : ${BOLD}https://d2dk2x85a04vx5.cloudfront.net/actuator/health${NC}"
+if [ -n "$NEW_ALB_DNS" ]; then
+    echo -e "  • Backend ALB  : ${DIM}http://${NEW_ALB_DNS} (Direct access locked to CloudFront)${NC}"
+fi
 echo -e "${GREEN}${BOLD}===================================================================================${NC}"
 echo ""

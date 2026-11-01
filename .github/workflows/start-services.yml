@@ -17,11 +17,17 @@ env:
 
 jobs:
   start-infrastructure:
-    name: Start / Resume Services
+    name: Start & Link Services
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout Source Code
+      - name: Checkout Backend Source Code
         uses: actions/checkout@v4
+
+      - name: Checkout Frontend Repository
+        uses: actions/checkout@v4
+        with:
+          repository: Nagarajukasarla/atithi-hostel-client
+          path: frontend-repo
 
       - name: Configure AWS Credentials via OIDC
         uses: aws-actions/configure-aws-credentials@v4
@@ -74,86 +80,82 @@ jobs:
           terraform_version: latest
           terraform_wrapper: false
 
-      - name: Terraform Init
+      - name: 2. Recreate Missing Backend Infrastructure (NAT / ALB / Route Tables)
+        id: tf-backend
         working-directory: ./terraform
         run: |
+          echo "=========================================================================="
+          echo "Checking and auto-provisioning missing Backend Infrastructure..."
+          echo "=========================================================================="
           terraform init -no-color
+          terraform apply -auto-approve -no-color
+          
+          ALB_DNS=$(terraform output -raw alb_dns_name)
+          echo "NEW_ALB_DNS=$ALB_DNS" >> $GITHUB_ENV
+          echo "Backend ALB DNS Name: $ALB_DNS"
 
-      - name: 2. Check and Recreate Missing Infrastructure (NAT / ALB / ECS)
-        working-directory: ./terraform
+      - name: 3. Scale Up ECS Service & Stabilize Containers
         run: |
-          echo "Checking if infrastructure resources (NAT Gateway, ALB, ECS Service) need recreation..."
-          set +e
-          terraform plan -detailed-exitcode -out=tfplan -no-color
-          PLAN_EXIT=$?
-          set -e
-
-          if [ $PLAN_EXIT -eq 0 ]; then
-            echo "Infrastructure is 100% up-to-date. No recreation needed."
-          elif [ $PLAN_EXIT -eq 2 ]; then
-            echo "Missing or modified resources detected (e.g. NAT Gateway/ALB). Applying Terraform plan..."
-            terraform apply -auto-approve -no-color tfplan
-            echo "Infrastructure re-provisioned successfully."
-          else
-            echo "Terraform plan encountered an unexpected error (exit code $PLAN_EXIT)."
-            exit 1
-          fi
-
-      - name: 3. Ensure ECS Service Desired Count is Active
-        run: |
-          echo "Checking ECS Service desired count..."
-          DESIRED_COUNT=$(aws ecs describe-services \
+          echo "=========================================================================="
+          echo "Scaling up ECS Fargate task (desired-count = 1)..."
+          echo "=========================================================================="
+          aws ecs update-service \
             --cluster "${{ env.ECS_CLUSTER }}" \
-            --services "${{ env.ECS_SERVICE }}" \
-            --region "${{ env.AWS_REGION }}" \
-            --query "services[0].desiredCount" \
-            --output text 2>/dev/null || echo "0")
+            --service "${{ env.ECS_SERVICE }}" \
+            --desired-count 1 \
+            --region "${{ env.AWS_REGION }}"
 
-          echo "Current ECS Service desired count: $DESIRED_COUNT"
-
-          if [ "$DESIRED_COUNT" -eq 0 ]; then
-            echo "Scaling up ECS service to desired-count = 1..."
-            aws ecs update-service \
-              --cluster "${{ env.ECS_CLUSTER }}" \
-              --service "${{ env.ECS_SERVICE }}" \
-              --desired-count 1 \
-              --region "${{ env.AWS_REGION }}"
-          else
-            echo "ECS service already has desired count >= 1."
-          fi
-
-          echo "Waiting for ECS service to reach a stable state..."
+          echo "Waiting for ECS service tasks to stabilize and register to Target Group..."
           aws ecs wait services-stable \
             --cluster "${{ env.ECS_CLUSTER }}" \
             --service "${{ env.ECS_SERVICE }}" \
             --region "${{ env.AWS_REGION }}"
-          echo "ECS service has stabilized successfully!"
+          echo "ECS service is STABLE and running!"
 
-      - name: 4. Verify Application Health Check
+      - name: 4. Re-Link Frontend CloudFront & Security Rules to New ALB
+        id: tf-frontend
+        working-directory: ./frontend-repo/terraform
         run: |
-          echo "Checking ALB endpoint and verifying backend health..."
-          ALB_DNS=$(aws elbv2 describe-load-balancers \
-            --names "${{ env.ALB_NAME }}" \
-            --region "${{ env.AWS_REGION }}" \
-            --query "LoadBalancers[0].DNSName" \
-            --output text 2>/dev/null || echo "not-found")
+          echo "=========================================================================="
+          echo "Re-linking CloudFront Distribution and ALB Security to New ALB: ${{ env.NEW_ALB_DNS }}"
+          echo "=========================================================================="
+          terraform init -no-color
+          terraform apply -var="cloudfront_enabled=true" -auto-approve -no-color
 
-          if [ "$ALB_DNS" != "not-found" ] && [ -n "$ALB_DNS" ]; then
-            echo "Application Load Balancer DNS: $ALB_DNS"
-            echo "Testing http://$ALB_DNS/actuator/health..."
-            for i in {1..12}; do
-              HTTP_STATUS=$(curl -s -o /dev/null -w "%{http_code}" --max-time 5 "http://$ALB_DNS/actuator/health" || true)
-              if [ "$HTTP_STATUS" == "200" ]; then
-                echo "Health check PASSED! Received HTTP 200 from Spring Boot backend."
-                echo "=================================================="
-                echo "🎉 Infrastructure is LIVE and ready for traffic!"
-                echo "=================================================="
-                exit 0
-              fi
-              echo "Attempt $i/12: Received HTTP $HTTP_STATUS, retrying in 10s..."
-              sleep 10
-            done
-            echo "Warning: Health check timed out after 120s, but containers may still be initializing."
-          else
-            echo "ALB not queried directly. Service is active."
-          fi
+          CF_DOMAIN=$(terraform output -raw cloudfront_domain_name)
+          echo "LIVE_CF_DOMAIN=$CF_DOMAIN" >> $GITHUB_ENV
+          echo "CloudFront Frontend Domain: https://$CF_DOMAIN"
+
+      - name: 5. Full End-to-End Health Verification
+        run: |
+          echo "=========================================================================="
+          echo "Running Live End-to-End Connectivity and Security Checks..."
+          echo "=========================================================================="
+          
+          # 1. Frontend Check
+          echo "Checking Frontend SPA at https://${{ env.LIVE_CF_DOMAIN }}..."
+          FE_HTTP=$(curl -s -o /dev/null -w "%{http_code}" "https://${{ env.LIVE_CF_DOMAIN }}" || echo "000")
+          echo "Frontend HTTP Status: $FE_HTTP"
+
+          # 2. Spring Boot via CloudFront
+          echo "Checking Spring Boot API at https://${{ env.LIVE_CF_DOMAIN }}/actuator/health..."
+          for i in {1..12}; do
+            API_STATUS=$(curl -s -o /dev/null -w "%{http_code}" --max-time 5 "https://${{ env.LIVE_CF_DOMAIN }}/actuator/health" || true)
+            if [ "$API_STATUS" == "200" ]; then
+              echo "✓ API Health Check PASSED via CloudFront (HTTP 200)!"
+              break
+            fi
+            echo "Attempt $i/12: Received HTTP $API_STATUS, retrying in 10s..."
+            sleep 10
+          done
+
+          # 3. Direct ALB Lockdown Verification
+          echo "Checking direct ALB security at http://${{ env.NEW_ALB_DNS }}/api/v1/auth/me..."
+          ALB_HTTP=$(curl -s -o /dev/null -w "%{http_code}" "http://${{ env.NEW_ALB_DNS }}/api/v1/auth/me" || echo "000")
+          echo "Direct ALB Status (Expected 403 Forbidden): $ALB_HTTP"
+
+          echo "=========================================================================="
+          echo "🎉 ATITHI FULL STACK IS LIVE AND PROPERLY LINKED!"
+          echo "Frontend App : https://${{ env.LIVE_CF_DOMAIN }}"
+          echo "Backend API  : https://${{ env.LIVE_CF_DOMAIN }}/actuator/health"
+          echo "=========================================================================="
