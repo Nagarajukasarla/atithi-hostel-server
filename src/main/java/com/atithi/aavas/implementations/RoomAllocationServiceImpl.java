@@ -1,6 +1,7 @@
 package com.atithi.aavas.implementations;
 
 import com.atithi.aavas.enums.AllocationStatus;
+import com.atithi.aavas.enums.CustomerStatus;
 import com.atithi.aavas.enums.RoomStatus;
 import com.atithi.aavas.models.Customer;
 import com.atithi.aavas.models.Hostel;
@@ -95,6 +96,12 @@ public class RoomAllocationServiceImpl implements RoomAllocationService {
                 .build();
 
         RoomAllocation savedAllocation = roomAllocationRepository.save(allocation);
+
+        // Ensure customer is active
+        if (customer.getStatus() != CustomerStatus.ACTIVE) {
+            customer.setStatus(CustomerStatus.ACTIVE);
+            customerRepository.save(customer);
+        }
 
         // Update Room Occupancy & Status atomically
         int newOccupied = currentOccupied + 1;
@@ -569,6 +576,15 @@ public class RoomAllocationServiceImpl implements RoomAllocationService {
         allocation.setStatus(AllocationStatus.ENDED);
         allocation.setCheckOutDate(checkOutDate);
         RoomAllocation updatedAllocation = roomAllocationRepository.save(allocation);
+
+        // Update customer status to INACTIVE if no other active allocation exists
+        boolean hasOtherActive = roomAllocationRepository.existsByHostel_IdAndCustomer_IdAndStatus(
+                hostelId, customer.getId(), AllocationStatus.ACTIVE
+        );
+        if (!hasOtherActive) {
+            customer.setStatus(CustomerStatus.INACTIVE);
+            customerRepository.save(customer);
+        }
 
         // 8. Decrement room occupied count and update status
         int currentOccupied = room.getOccupied() != null ? room.getOccupied() : 1;

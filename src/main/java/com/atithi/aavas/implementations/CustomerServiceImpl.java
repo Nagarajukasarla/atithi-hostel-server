@@ -2,6 +2,7 @@ package com.atithi.aavas.implementations;
 
 import com.atithi.aavas.enums.AllocationStatus;
 import com.atithi.aavas.enums.ChargeType;
+import com.atithi.aavas.enums.CustomerStatus;
 import com.atithi.aavas.models.*;
 import com.atithi.aavas.repositories.*;
 import com.atithi.aavas.requests.CustomerRequest;
@@ -206,6 +207,19 @@ public class CustomerServiceImpl implements CustomerService {
             Long allocId = allocation.getId();
             AllocationStatus allocStatus = allocation.getStatus();
 
+            CustomerStatus customerStatus = customer.getStatus();
+            // If allocation is ended, ensure customer status is synchronized to INACTIVE if no active allocations remain
+            if (allocStatus == AllocationStatus.ENDED && customerStatus == CustomerStatus.ACTIVE) {
+                boolean hasActive = roomAllocationRepository.existsByHostel_IdAndCustomer_IdAndStatus(
+                        hostelId, customerId, AllocationStatus.ACTIVE
+                );
+                if (!hasActive) {
+                    customer.setStatus(CustomerStatus.INACTIVE);
+                    customerRepository.save(customer);
+                    customerStatus = CustomerStatus.INACTIVE;
+                }
+            }
+
             directory.add(new CustomerDirectoryItemResponse(
                     customerId,
                     customer.getFullName(),
@@ -223,7 +237,8 @@ public class CustomerServiceImpl implements CustomerService {
                     allocId,
                     allocStatus,
                     outstandingBalance,
-                    latestPaymentDate
+                    latestPaymentDate,
+                    customerStatus
             ));
         }
 

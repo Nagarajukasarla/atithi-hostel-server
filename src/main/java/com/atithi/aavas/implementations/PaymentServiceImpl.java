@@ -1,5 +1,7 @@
 package com.atithi.aavas.implementations;
 
+import com.atithi.aavas.enums.AllocationStatus;
+import com.atithi.aavas.enums.CustomerStatus;
 import com.atithi.aavas.enums.PaymentStatus;
 import com.atithi.aavas.models.Customer;
 import com.atithi.aavas.models.Hostel;
@@ -43,10 +45,31 @@ public class PaymentServiceImpl implements PaymentService {
         Customer customer = customerRepository.findById(request.customerId())
                 .orElseThrow(() -> new IllegalArgumentException("Customer not found with ID: " + request.customerId()));
 
+        // Check if customer is active in the hostel
+        boolean hasActiveAllocation = roomAllocationRepository.existsByHostel_IdAndCustomer_IdAndStatus(
+                hostelId, customer.getId(), AllocationStatus.ACTIVE
+        );
+
+        if (customer.getStatus() != CustomerStatus.ACTIVE || !hasActiveAllocation) {
+            // Synchronize status to INACTIVE if it was previously ACTIVE
+            if (customer.getStatus() == CustomerStatus.ACTIVE) {
+                customer.setStatus(CustomerStatus.INACTIVE);
+                customerRepository.save(customer);
+            }
+            throw new IllegalArgumentException("Cannot record payment: Customer " + customer.getFullName() +
+                    " has already exited from the hostel and is not an active resident.");
+        }
+
         RoomAllocation allocation = null;
         if (request.allocationId() != null) {
             allocation = roomAllocationRepository.findByIdAndHostel_Id(request.allocationId(), hostelId)
                     .orElseThrow(() -> new IllegalArgumentException("Room allocation not found with ID: " + request.allocationId()));
+            if (allocation.getStatus() != AllocationStatus.ACTIVE) {
+                throw new IllegalArgumentException("Cannot record payment: Room allocation is already " + allocation.getStatus() + ".");
+            }
+        } else {
+            allocation = roomAllocationRepository.findByHostel_IdAndCustomer_IdAndStatus(hostelId, customer.getId(), AllocationStatus.ACTIVE)
+                    .orElse(null);
         }
 
         String receiptNumber = request.receiptNumber();

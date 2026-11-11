@@ -2,13 +2,14 @@ package com.atithi.aavas.responses;
 
 import com.atithi.aavas.enums.AllocationStatus;
 import com.atithi.aavas.enums.BillingMode;
+import com.atithi.aavas.enums.CustomerStatus;
 import java.math.BigDecimal;
 import java.time.LocalDate;
 
 /**
  * DTO for the Customer Directory table view:
  * Displays active resident room info, agreed terms, paid rent (current cycle),
- * security deposit, security deposit paid, outstanding balance, and latest payment date.
+ * security deposit, security deposit paid, outstanding balance, latest payment date, and customer status.
  */
 public record CustomerDirectoryItemResponse(
         Long customerId,
@@ -27,7 +28,8 @@ public record CustomerDirectoryItemResponse(
         Long allocationId,
         AllocationStatus allocationStatus,
         BigDecimal outstandingBalance,
-        LocalDate latestPaymentDate
+        LocalDate latestPaymentDate,
+        CustomerStatus customerStatus
 ) {
     public CustomerDirectoryItemResponse(
             Long customerId,
@@ -46,6 +48,6 @@ public record CustomerDirectoryItemResponse(
     ) {
         this(customerId, name, mobileNumber, roomNumber, bedNumber, BillingMode.MONTHLY,
                 monthlyRent, null, paidRent, securityDeposit, securityDepositPaid,
-                joinDate, null, allocationId, AllocationStatus.ACTIVE, outstandingBalance, latestPaymentDate);
+                joinDate, null, allocationId, AllocationStatus.ACTIVE, outstandingBalance, latestPaymentDate, CustomerStatus.ACTIVE);
     }
 }
